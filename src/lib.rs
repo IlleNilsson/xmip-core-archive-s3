@@ -4,6 +4,9 @@
 //! object in a bucket, its metadata as a second object beside it, and
 //! restores the item by getting both back.
 //!
+//! The metadata text, the timestamp, the layout and the checksum come
+//! from the archive capability (ADR-0044); only the dialect is this crate's.
+//!
 //! A xmip-core-archive **technology** (repository-model.md): it depends on
 //! the archive capability for the [`ArchiveStore`] trait and its item,
 //! receipt and error types, and on the S3 transport technology for the
@@ -18,11 +21,10 @@
 //! as its checksum, and restoring checks the bytes that come back against
 //! it.
 
-pub mod object;
-
 use std::time::Duration;
 
 use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore};
+use archive::{checksum, layout, metadata};
 use s3::Client;
 
 /// An archive that keeps items as objects under one prefix of one bucket.
@@ -100,23 +102,23 @@ impl S3Archive {
 
 impl ArchiveStore for S3Archive {
     fn archive(&self, item: ArchiveItem) -> Result<ArchiveReceipt, ArchiveError> {
-        let key = object::key(&self.prefix, &item.data_type, &item.identifier);
-        let metadata = object::encode_metadata(&item.metadata);
+        let key = layout::key(&self.prefix, &item.data_type, &item.identifier);
+        let metadata = metadata::encode(&item.metadata);
         let client = self.client()?;
         client.put(&self.bucket, &key, &item.bytes).map_err(error)?;
         client
-            .put(&self.bucket, &object::meta_key(&key), metadata.as_bytes())
+            .put(&self.bucket, &layout::meta_key(&key), metadata.as_bytes())
             .map_err(error)?;
         Ok(ArchiveReceipt {
             location: format!("s3://{}/{key}", self.bucket),
-            checksum: Some(object::sha256_hex(&item.bytes)),
+            checksum: Some(checksum::sha256_hex(&item.bytes)),
         })
     }
 
     fn restore(&self, receipt: &ArchiveReceipt) -> Result<ArchiveItem, ArchiveError> {
         let (bucket, key) = parse_location(&receipt.location)?;
         let (data_type, identifier) =
-            object::split_key(&self.prefix, key).ok_or_else(|| ArchiveError {
+            layout::split_key(&self.prefix, key).ok_or_else(|| ArchiveError {
                 message: format!(
                     "{key} is not laid out as {}/<data_type>/<identifier>",
                     self.prefix
@@ -125,7 +127,7 @@ impl ArchiveStore for S3Archive {
         let client = self.client()?;
         let bytes = client.get(bucket, key).map_err(error)?;
         if let Some(expected) = &receipt.checksum {
-            let actual = object::sha256_hex(&bytes);
+            let actual = checksum::sha256_hex(&bytes);
             if &actual != expected {
                 return Err(ArchiveError {
                     message: format!(
@@ -135,13 +137,13 @@ impl ArchiveStore for S3Archive {
                 });
             }
         }
-        let metadata = client.get(bucket, &object::meta_key(key)).map_err(error)?;
+        let metadata = client.get(bucket, &layout::meta_key(key)).map_err(error)?;
         let metadata = String::from_utf8(metadata).map_err(error)?;
         Ok(ArchiveItem {
             data_type,
             identifier,
             bytes,
-            metadata: object::decode_metadata(&metadata),
+            metadata: metadata::decode(&metadata),
         })
     }
 }
@@ -214,7 +216,7 @@ mod tests {
         assert_eq!(receipt.location, "s3://orders-archive/retained/json/json#1");
         assert_eq!(
             receipt.checksum.as_deref(),
-            Some(object::sha256_hex(&original.bytes).as_str())
+            Some(checksum::sha256_hex(&original.bytes).as_str())
         );
         let (session, events) = far_end.join().expect("thread");
         let held = session.objects();

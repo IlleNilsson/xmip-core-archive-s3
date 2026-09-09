@@ -20,8 +20,6 @@ archive = { package = "xmip-core-archive", git = "https://github.com/IlleNilsson
 # The connection: the sibling transport technology's Client puts and gets
 # signed objects, and its Session is the far end a test binds.
 s3 = { package = "xmip-core-transport-s3", git = "https://github.com/IlleNilsson/xmip-core-transport-s3", branch = "main" }
-# The receipt's checksum is SHA-256 of the bytes.
-sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"
