@@ -21,6 +21,11 @@ archive = { package = "xmip-core-archive", git = "https://github.com/IlleNilsson
 # signed objects, and its Session is the far end a test binds.
 s3 = { package = "xmip-core-transport-s3", git = "https://github.com/IlleNilsson/xmip-core-transport-s3", branch = "main" }
 
+[dev-dependencies]
+# The tests archive the capability's fixture item (ADR-0044); the feature
+# is enabled here so it is never part of a production build.
+archive = { package = "xmip-core-archive", git = "https://github.com/IlleNilsson/xmip-core-archive", branch = "main", features = ["test-support"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 

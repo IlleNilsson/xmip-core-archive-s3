@@ -4,8 +4,9 @@
 //! object in a bucket, its metadata as a second object beside it, and
 //! restores the item by getting both back.
 //!
-//! The metadata text, the timestamp, the layout and the checksum come
-//! from the archive capability (ADR-0044); only the dialect is this crate's.
+//! The metadata text, the timestamp, the layout, the checksum and the
+//! receipt parser come from the archive capability (ADR-0044); only the
+//! dialect is this crate's.
 //!
 //! A xmip-core-archive **technology** (repository-model.md): it depends on
 //! the archive capability for the [`ArchiveStore`] trait and its item,
@@ -13,7 +14,7 @@
 //! signed requests — Signature Version 4, path-style, one connection a
 //! call. The same four fields every archive technology carries —
 //! `data_type`, `identifier`, `bytes`, `metadata` — are laid out as
-//! `object.rs` says: the bytes at `<prefix>/<data_type>/<identifier>`, the
+//! `archive::layout` says: the bytes at `<prefix>/<data_type>/<identifier>`, the
 //! metadata text at the same key with `.meta` appended.
 //!
 //! An archive never deletes (ADR-0040): this one puts and gets, nothing
@@ -24,7 +25,7 @@
 use std::time::Duration;
 
 use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore};
-use archive::{checksum, layout, metadata};
+use archive::{checksum, layout, location, metadata};
 use s3::Client;
 
 /// An archive that keeps items as objects under one prefix of one bucket.
@@ -92,7 +93,7 @@ impl S3Archive {
             &self.access_key,
             &self.secret_key,
         )
-        .map_err(error)?;
+        .map_err(ArchiveError::caused_by)?;
         Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,
@@ -105,10 +106,12 @@ impl ArchiveStore for S3Archive {
         let key = layout::key(&self.prefix, &item.data_type, &item.identifier);
         let metadata = metadata::encode(&item.metadata);
         let client = self.client()?;
-        client.put(&self.bucket, &key, &item.bytes).map_err(error)?;
+        client
+            .put(&self.bucket, &key, &item.bytes)
+            .map_err(ArchiveError::caused_by)?;
         client
             .put(&self.bucket, &layout::meta_key(&key), metadata.as_bytes())
-            .map_err(error)?;
+            .map_err(ArchiveError::caused_by)?;
         Ok(ArchiveReceipt {
             location: format!("s3://{}/{key}", self.bucket),
             checksum: Some(checksum::sha256_hex(&item.bytes)),
@@ -116,7 +119,7 @@ impl ArchiveStore for S3Archive {
     }
 
     fn restore(&self, receipt: &ArchiveReceipt) -> Result<ArchiveItem, ArchiveError> {
-        let (bucket, key) = parse_location(&receipt.location)?;
+        let (bucket, key) = location::bucket_key("s3", &receipt.location)?;
         let (data_type, identifier) =
             layout::split_key(&self.prefix, key).ok_or_else(|| ArchiveError {
                 message: format!(
@@ -125,7 +128,7 @@ impl ArchiveStore for S3Archive {
                 ),
             })?;
         let client = self.client()?;
-        let bytes = client.get(bucket, key).map_err(error)?;
+        let bytes = client.get(bucket, key).map_err(ArchiveError::caused_by)?;
         if let Some(expected) = &receipt.checksum {
             let actual = checksum::sha256_hex(&bytes);
             if &actual != expected {
@@ -137,8 +140,10 @@ impl ArchiveStore for S3Archive {
                 });
             }
         }
-        let metadata = client.get(bucket, &layout::meta_key(key)).map_err(error)?;
-        let metadata = String::from_utf8(metadata).map_err(error)?;
+        let metadata = client
+            .get(bucket, &layout::meta_key(key))
+            .map_err(ArchiveError::caused_by)?;
+        let metadata = String::from_utf8(metadata).map_err(ArchiveError::caused_by)?;
         Ok(ArchiveItem {
             data_type,
             identifier,
@@ -148,42 +153,13 @@ impl ArchiveStore for S3Archive {
     }
 }
 
-/// The bucket and key a receipt names: `s3://<bucket>/<key>`.
-fn parse_location(location: &str) -> Result<(&str, &str), ArchiveError> {
-    location
-        .strip_prefix("s3://")
-        .and_then(|rest| rest.split_once('/'))
-        .filter(|(bucket, key)| !bucket.is_empty() && !key.is_empty())
-        .ok_or_else(|| ArchiveError {
-            message: format!("{location} is not s3://bucket/key"),
-        })
-}
-
-fn error(cause: impl std::fmt::Display) -> ArchiveError {
-    ArchiveError {
-        message: cause.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archive::fixture::{item, secs};
     use s3::{Event, Session};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
-
-    fn secs(n: u64) -> Duration {
-        Duration::from_secs(n)
-    }
-
-    fn item(id: &str) -> ArchiveItem {
-        ArchiveItem {
-            data_type: "json".to_string(),
-            identifier: id.to_string(),
-            bytes: b"{\"kept\":true}".to_vec(),
-            metadata: vec![("source".to_string(), "playground".to_string())],
-        }
-    }
 
     /// A far end that answers `requests` signed requests, one connection
     /// each, and then hands back what it holds and what it saw.
