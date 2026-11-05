@@ -203,7 +203,7 @@ mod tests {
         );
         assert_eq!(
             held.get("orders-archive/retained/json/json#1.meta"),
-            Some(&b"source\x1fplayground".to_vec())
+            Some(&b"source\x1fessentials".to_vec())
         );
         assert!(matches!(&events[0], Event::Stored(arrived)
             if arrived.origin_uri == "s3://orders-archive/retained/json/json#1"));
